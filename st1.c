@@ -74,6 +74,6 @@ int main(void) {
 			fprintf(stderr, "%i%s", ans[j], (j==N-1) ? "\n" : " ");
 		} */
 	}
-	fprintf(stderr, "Done! %s %s\n", a, a+25);
+	fprintf(stderr, "%i: Done!\n", pid);
 	return 0;
 }

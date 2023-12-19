@@ -424,6 +424,16 @@ int main(int argc, char **argv) {
 		for (i = 0; i < N; ++i) {
 			printf("%i-th strategy %s: %i\n", i, answered[i] ?
 			"finished" : "not finished", ans[i]);
+			if (not_alive[i]) {
+				if (WIFEXITED(retstatuses[i])) {
+					fprintf(stderr, "%i strategy (%i) exited with %i, stopping\n", i, pids[i], WEXITSTATUS(retstatuses[i]));
+					goto cleanup;
+				}
+				if (WIFSIGNALED(retstatuses[i])) {
+					fprintf(stderr, "%i strategy (%i) killed by %i, stopping\n", i, pids[i], WTERMSIG(retstatuses[i]));
+                                        goto cleanup;
+				}
+			}
 		}
 		j = 0;
 		for (i = 0; i < N; ++i) {
@@ -442,6 +452,7 @@ int main(int argc, char **argv) {
 		buf_size = j;
 		write(MACHINE_LOG, buf, buf_size);
 	} /* one round routine finished */
+cleanup:
 	for (i = 0; i < N; ++i) {
 		if (not_alive[i] == 0) {
 			fprintf(stderr, "%i was still alive\n", i);
