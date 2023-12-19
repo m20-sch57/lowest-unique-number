@@ -10,10 +10,9 @@ int main(void) {
 	pid_t pid;
 	unsigned int seed;
 
-	fprintf(stderr, "Started!\n");
-	/* scanf("%s%s", a, a+25); */
-	N = 0;
 	pid = getpid();
+	fprintf(stderr, "%i: Started!\n", pid);
+	N = 0;
 	while (1) {
 		i = read(0, a, 1);
 		if (i < 0) {
@@ -37,7 +36,7 @@ int main(void) {
 	}
 	getrandom(&seed, sizeof(int), 0);
 	srand(seed);
-	fprintf(stderr, "Random seed: %u\n", seed);
+	fprintf(stderr, "%i: Random seed: %u\n", pid, seed);
 	for (i = 0; 1; ++i) {
 		k = rand();
 		printf("%i\n", k);
