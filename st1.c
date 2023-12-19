@@ -7,10 +7,13 @@
 int main(void) {
 	char a[50];
 	int i, j, k, N, *ans;
+	pid_t pid;
 	unsigned int seed;
+
 	fprintf(stderr, "Started!\n");
 	/* scanf("%s%s", a, a+25); */
 	N = 0;
+	pid = getpid();
 	while (1) {
 		i = read(0, a, 1);
 		if (i < 0) {
@@ -26,7 +29,7 @@ int main(void) {
 		}
 		N = N*10 + *a - '0';
 	}
-	fprintf(stderr, "Number of players: %i\n", N);
+	fprintf(stderr, "%i: Number of players: %i\n", pid, N);
 	ans = malloc(sizeof(int)*N);
 	if (ans == NULL) {
 		perror("malloc");
@@ -39,7 +42,7 @@ int main(void) {
 		k = rand();
 		printf("%i\n", k);
 		fflush(stdout);
-		fprintf(stderr, "%i\n", k);
+		fprintf(stderr, "%i: %i\n", pid, k);
 		k = 0;
 		j = 0;
 		memset(ans, 0, sizeof(int)*N);
@@ -66,7 +69,10 @@ int main(void) {
 		if (k < 0) {
 			break;
 		}
-		fprintf(stderr, "%i: %i\n", k, (int)a[0]);
+		/* fprintf(stderr, "%i: ", pid);
+		for (j = 0; j < N; ++j) {
+			fprintf(stderr, "%i%s", ans[j], (j==N-1) ? "\n" : " ");
+		} */
 	}
 	fprintf(stderr, "Done! %s %s\n", a, a+25);
 	return 0;

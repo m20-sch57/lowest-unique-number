@@ -29,16 +29,6 @@ void sa_sigchld(int __attribute__((unused)) sig) {
 	got_SIGCHLD = 1;
 }
 
-int sntoi(char *str, int n, int start) {
-	int i, ans;
-	ans = start;
-	for (i = 0; i < n; ++i) {
-		ans *= 10;
-		ans += (int)(str[i] - '0');
-	}
-	return ans;
-}
-
 int main(int argc, char **argv) {
 	int N, i, j, k, round_num, st_num, buf_size;
 	char **in_fifos, **out_fifos;
@@ -210,16 +200,6 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 	}
-	k = snprintf(buf, BUFSIZE, "%i\n", N);
-	if (k < 0) {
-		perror("snprintf");
-		return 1;
-	}
-	if (k >= BUFSIZE) {
-		fprintf(stderr, "Too many strategies, %i is longer, than %i symbols\n",
-			N, BUFSIZE);
-		return 1;
-	}
 	for (i = 0; i < N; ++i) {
 		pid = fork();
 		if (pid < 0) {
@@ -264,6 +244,16 @@ int main(int argc, char **argv) {
 				return 1;
 			}
 			/* tell strategy number of players */
+			k = snprintf(buf, BUFSIZE, "%i\n", N);
+			if (k < 0) {
+				perror("snprintf");
+				return 1;
+			}
+			if (k >= BUFSIZE) {
+				fprintf(stderr, "Too many strategies, %i is longer, than %i symbols\n",
+					N, BUFSIZE);
+				return 1;
+			}
 			write(out_fds[i], buf, k);
 			/* wait and get first guess from it */
 			ans[i] = 0;
@@ -279,7 +269,7 @@ int main(int argc, char **argv) {
 				}
 				for (j = 0; j < k; ++j) {
 					if ('0' <= buf[j] && buf[j] <= '9') {
-						ans[i] = 10*ans[i]+buf[j];
+						ans[i] = 10*ans[i]+buf[j]-'0';
 					} else {
 						break;
 					}
@@ -307,8 +297,6 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	sigemptyset(&sigmask);
-	for (round_num = 0; round_num <= NUM_ROUNDS; ++round_num) {
-	/* doing one round */
 	j = 0;
 	for (i = 0; i < N; ++i) {
 		k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
@@ -322,111 +310,137 @@ int main(int argc, char **argv) {
 		}
 		j += k + 1;
 		buf[j-1] = (i == N-1) ? '\n' : ' ';
-		ans[i] = 0;
 	}
 	buf_size = j;
 	write(MACHINE_LOG, buf, buf_size);
-	for (st_num = 0; st_num < N; ++st_num) {
-		write(out_fds[st_num], buf, buf_size);
+	for (round_num = 1; round_num <= NUM_ROUNDS; ++round_num) {
+		/* doing one round */
+		memset(answered, 0, sizeof(int)*N);
+		memset(ans, 0, sizeof(int)*N);
+		for (st_num = 0; st_num < N; ++st_num) {
+			write(out_fds[st_num], buf, buf_size);
+			(pfds+st_num)->fd = in_fds[st_num];
 #ifndef NPAR
-	}
-#endif
-	if (gettimeofday(pfinish, NULL) == -1) {
-		perror("gettimeofday");
-		return 1;
-	}
-	pfinish->tv_usec += WAIT_MSEC % 1000 * 1000;
-	pfinish->tv_sec += WAIT_MSEC / 1000 + pfinish->tv_usec / 1000000;
-	pfinish->tv_usec %= 1000000;
-	while (1) {
-#ifndef NPAR
-		k = 1;
-		for (i = 0; i < N; ++i) {
-			if (!answered[i]) {
-				k = 0;
-				break;
-			}
 		}
-#else
-		k = answered[st_num];
 #endif
-		if (k) {
-			fprintf(stderr, "All finished before time was up\n");
-			break;
-		}
-		if (gettimeofday(pnow, NULL) == -1) {
+		if (gettimeofday(pfinish, NULL) == -1) {
 			perror("gettimeofday");
 			return 1;
 		}
-		if (pnow->tv_sec > pfinish->tv_sec ||
-			(pnow->tv_sec == pfinish->tv_sec &&
-			pnow->tv_usec >= pfinish->tv_usec)) {
-			break;
-		}
-		if (pfinish->tv_usec < pnow->tv_usec) {
-			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec - 1;
-			tmo_p->tv_nsec = 1000000000 +
-				(pfinish->tv_usec - pnow->tv_usec) * 1000;
-		} else {
-			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec;
-			tmo_p->tv_nsec = (pfinish->tv_usec - pnow->tv_usec) * 1000;
-		}
-		k = ppoll(pfds, N, tmo_p, &sigmask);
-		if (k == -1 && errno != EINTR) {
-			fprintf(stderr, "ppoll failed\n");
-			perror("ppoll");
-			break;
-		}
-		for (i = 0; i < N; ++i) {
-			if ((pfds+i)->fd > 0 && (pfds+i)->revents != 0) {
-				if ((pfds+i)->revents & POLLIN) {
-					k = read(in_fds[i], buf, sizeof(buf));
-					if (k == -1) {
-						perror("read");
-						return 1;
-					}
-					for (j = 0; j < k; ++j) {
-						if ('0' > buf[j] || buf[j] > '9') {
-							(pfds+i)->fd = -1 * in_fds[i];
-							answered[i] = 1;
-							break;
-						}
-					}
-					ans[i] = sntoi(buf, j, ans[i]);
-				} else {
-					not_alive[i] = 2;
-					(pfds+i)->fd = -1 * in_fds[i];
-					/* optinally kill the proc */
+		pfinish->tv_usec += WAIT_MSEC % 1000 * 1000;
+		pfinish->tv_sec += WAIT_MSEC / 1000 + pfinish->tv_usec / 1000000;
+		pfinish->tv_usec %= 1000000;
+		while (1) {
+#ifndef NPAR
+			k = 1;
+			for (i = 0; i < N; ++i) {
+				if (!answered[i]) {
+					k = 0;
+					break;
 				}
 			}
-		}
-		if (got_SIGCHLD) {
-			got_SIGCHLD = 0;
-			pid = wait(&k);
-			if (pid == -1) {
-				perror("wait");
+#else
+			k = answered[st_num];
+#endif
+			if (k) {
+				fprintf(stderr, "All finished before time was up\n");
+				break;
+			}
+			if (gettimeofday(pnow, NULL) == -1) {
+				perror("gettimeofday");
 				return 1;
 			}
-			fprintf(stderr, "waited for %i\n", pid);
+			if (pnow->tv_sec > pfinish->tv_sec ||
+				(pnow->tv_sec == pfinish->tv_sec &&
+				pnow->tv_usec >= pfinish->tv_usec)) {
+				break;
+			}
+			if (pfinish->tv_usec < pnow->tv_usec) {
+				tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec - 1;
+				tmo_p->tv_nsec = 1000000000 +
+					(pfinish->tv_usec - pnow->tv_usec) * 1000;
+			} else {
+				tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec;
+				tmo_p->tv_nsec = (pfinish->tv_usec - pnow->tv_usec) * 1000;
+			}
+			k = ppoll(pfds, N, tmo_p, &sigmask);
+			if (k == -1 && errno != EINTR) {
+				fprintf(stderr, "ppoll failed\n");
+				perror("ppoll");
+				break;
+			}
 			for (i = 0; i < N; ++i) {
-				if (pid == pids[i]) {
-					not_alive[i] = 1;
-					retstatuses[i] = k;
+				if ((pfds+i)->fd > 0 && (pfds+i)->revents != 0) {
+					if ((pfds+i)->revents & POLLIN) {
+						k = read(in_fds[i], buf, BUFSIZE);
+						if (k == -1) {
+							perror("read");
+							return 1;
+						}
+						for (j = 0; j < k; ++j) {
+							if ('0' > buf[j] || buf[j] > '9') {
+								(pfds+i)->fd = -1 * in_fds[i];
+								answered[i] = 1;
+								break;
+							} else {
+								ans[i] = ans[i]*10 + (int)(buf[j] - '0');
+							}
+						}
+					} else {
+						not_alive[i] = 2;
+						(pfds+i)->fd = -1 * in_fds[i];
+						/* optinally kill the proc */
+						if (pids[i] <= 0) {
+							fprintf(stderr, "Bad pid: %i\n", pids[i]);
+						} else {
+							kill(pids[i], SIGTERM);
+						}
+					}
 				}
-				not_alive[i] = -1;
-				(pfds+i)->fd = -1 * in_fds[i];
-				close(in_fds[i]);
-				close(out_fds[i]);
+			}
+			if (got_SIGCHLD) {
+				got_SIGCHLD = 0;
+				pid = wait(&k);
+				if (pid == -1) {
+					perror("wait");
+					return 1;
+				}
+				fprintf(stderr, "waited for %i\n", pid);
+				for (i = 0; i < N; ++i) {
+					if (pid == pids[i]) {
+						not_alive[i] = 1;
+						retstatuses[i] = k;
+					}
+					not_alive[i] = -1;
+					(pfds+i)->fd = -1 * in_fds[i];
+					close(in_fds[i]);
+					close(out_fds[i]);
+				}
 			}
 		}
-	}
 #ifdef NPAR
-	}
+		}
 #endif
-	for (i = 0; i < N; ++i) {
-		printf("%i-th strategy %s: %i\n", i, answered[i] ?
-		"finished" : "not finished", ans[i]);
-	}
+		for (i = 0; i < N; ++i) {
+			printf("%i-th strategy %s: %i\n", i, answered[i] ?
+			"finished" : "not finished", ans[i]);
+		}
+		j = 0;
+		for (i = 0; i < N; ++i) {
+			k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
+			if (k < 0) {
+				perror("snprintf");
+				return 1;
+			}
+			if (k + 1 >= BUFSIZE - j) {
+				fprintf(stderr, "Ans string too long, aborting\n");
+				return 1;
+			}
+			j += k + 1;
+			buf[j-1] = (i == N-1) ? '\n' : ' ';
+		}
+		buf_size = j;
+		write(MACHINE_LOG, buf, buf_size);
 	} /* one round routine finished */
 	for (i = 0; i < N; ++i) {
 		if (not_alive[i] == 0) {
