@@ -16,7 +16,7 @@
 
 #define WAIT_MSEC	100
 #define BUFSIZE		1024
-#define NUM_ROUNDS	10
+#define NUM_ROUNDS	10000
 
 char *USAGE = "usage: %s <machine_log> <human_log> <N> <st_1> ... <st_N>\n";
 char *FIFO_NAME_TEMPL = "fifo%i.%s";
@@ -313,7 +313,7 @@ int main(int argc, char **argv) {
 	}
 	buf_size = j;
 	write(MACHINE_LOG, buf, buf_size);
-	for (round_num = 1; round_num <= NUM_ROUNDS; ++round_num) {
+	for (round_num = 1; round_num < NUM_ROUNDS; ++round_num) {
 		/* doing one round */
 		memset(answered, 0, sizeof(int)*N);
 		memset(ans, 0, sizeof(int)*N);
@@ -343,7 +343,7 @@ int main(int argc, char **argv) {
 			k = answered[st_num];
 #endif
 			if (k) {
-				fprintf(stderr, "All finished before time was up\n");
+				/* fprintf(stderr, "All finished before time was up\n"); */
 				break;
 			}
 			if (gettimeofday(pnow, NULL) == -1) {
