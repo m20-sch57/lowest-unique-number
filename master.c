@@ -16,7 +16,7 @@
 
 #define WAIT_MSEC	100
 #define BUFSIZE		1024
-#define NUM_ROUNDS	10000
+#define NUM_ROUNDS	1000
 
 char *USAGE = "usage: %s <machine_log> <human_log> <N> <st_1> ... <st_N>\n";
 char *FIFO_NAME_TEMPL = "fifo%i.%s";
@@ -61,7 +61,7 @@ int main(int argc, char **argv) {
 		return 1;
 	}
 	if (strcmp(*(argv+1), "-") != 0) {
-		MACHINE_LOG = open(*(argv+1), O_WRONLY | O_CREAT | O_EXCL | O_DSYNC,
+		MACHINE_LOG = open(*(argv+1), O_WRONLY | O_CREAT | O_EXCL,
 				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (MACHINE_LOG < 0) {
 			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+1));
@@ -72,7 +72,7 @@ int main(int argc, char **argv) {
 		MACHINE_LOG = 1;
 	}
 	if (strcmp(*(argv+2), "-") != 0) {
-		k = open(*(argv+2), O_WRONLY | O_CREAT | O_EXCL | O_DSYNC,
+		k = open(*(argv+2), O_WRONLY | O_CREAT | O_EXCL,
 			S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k < 0) {
 			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+2));
@@ -207,6 +207,13 @@ int main(int argc, char **argv) {
 			return 1;
 		}
 		if (pid == 0) {
+			if (MACHINE_LOG != 1) {
+				close(MACHINE_LOG);
+			}
+			for (j = 0; j < i; ++j) {
+				close(in_fds[j]);
+				close(out_fds[j]);
+			}
 			/* child */
 			fprintf(stderr, "Starting to reopen 0 and 1\n");
 			k = open(in_fifos[i], O_WRONLY);
@@ -271,7 +278,10 @@ int main(int argc, char **argv) {
 					if ('0' <= buf[j] && buf[j] <= '9') {
 						ans[i] = 10*ans[i]+buf[j]-'0';
 					} else {
-						break;
+						if (buf[j] == '\n') {
+							break;
+						}
+						goto kill_all;
 					}
 				}
 				if (j < k && (buf[j] > '9' || buf[j] < '0')) {
@@ -379,9 +389,12 @@ int main(int argc, char **argv) {
 						}
 						for (j = 0; j < k; ++j) {
 							if ('0' > buf[j] || buf[j] > '9') {
-								(pfds+i)->fd = -1 * in_fds[i];
-								answered[i] = 1;
-								break;
+								if (buf[j] == '\n') {
+									(pfds+i)->fd = -1 * in_fds[i];
+									answered[i] = 1;
+									break;
+								}
+								goto kill_all;
 							} else {
 								ans[i] = ans[i]*10 + (int)(buf[j] - '0');
 							}
@@ -453,6 +466,8 @@ int main(int argc, char **argv) {
 		write(MACHINE_LOG, buf, buf_size);
 	} /* one round routine finished */
 cleanup:
+	fsync(MACHINE_LOG);
+	close(MACHINE_LOG);
 	for (i = 0; i < N; ++i) {
 		if (not_alive[i] == 0) {
 			fprintf(stderr, "%i was still alive\n", i);
