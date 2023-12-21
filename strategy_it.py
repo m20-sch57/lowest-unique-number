@@ -8,7 +8,7 @@ win_nums = []
 
 def index_who_wins(nums):
     #for i in range(0, max(nums) + 1):
-    for i in nums:
+    for i in sorted(nums):
         cnt = nums.count(i)
         if cnt == 1:
             return nums.index(i)
