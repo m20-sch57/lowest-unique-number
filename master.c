@@ -14,6 +14,8 @@
 #include <string.h>
 #include <fcntl.h>
 
+#define WAIT_SIGKILL	100
+#define WAIT_SIGTERM	1000
 #define WAIT_MSEC	100
 #define BUFSIZE		1024
 #define NUM_ROUNDS	1000
@@ -139,6 +141,7 @@ int main(int argc, char **argv) {
 		perror("malloc");
 		return 1;
 	}
+	memset(pids, 0, sizeof(pid_t)*N);
 	retstatuses = malloc(sizeof(int)*N);
 	if (retstatuses == NULL) {
 		perror("malloc");
@@ -192,21 +195,22 @@ int main(int argc, char **argv) {
 		k = mkfifo(in_fifos[i], S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k != 0) {
 			perror("mkfifo");
-			return 1;
+			goto cleanup;
 		}
 		k = mkfifo(out_fifos[i], S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k != 0) {
 			perror("mkfifo");
-			return 1;
+			goto cleanup;
 		}
 	}
 	for (i = 0; i < N; ++i) {
 		pid = fork();
 		if (pid < 0) {
 			perror("fork");
-			return 1;
+			goto kill_all;
 		}
 		if (pid == 0) {
+			/* child */
 			if (MACHINE_LOG != 1) {
 				close(MACHINE_LOG);
 			}
@@ -214,7 +218,6 @@ int main(int argc, char **argv) {
 				close(in_fds[j]);
 				close(out_fds[j]);
 			}
-			/* child */
 			fprintf(stderr, "Starting to reopen 0 and 1\n");
 			k = open(in_fifos[i], O_WRONLY);
 			if (k == -1) {
@@ -243,36 +246,44 @@ int main(int argc, char **argv) {
 			in_fds[i] = open(in_fifos[i], O_RDONLY);
 			if (in_fds[i] == -1) {
 				perror("open");
-				return 1;
+				goto kill_all;
 			}
 			out_fds[i] = open(out_fifos[i], O_WRONLY);
 			if (out_fds[i] == -1) {
 				perror("open");
-				return 1;
+				goto kill_all;
 			}
 			/* tell strategy number of players */
-			k = snprintf(buf, BUFSIZE, "%i\n", N);
-			if (k < 0) {
+			buf_size = snprintf(buf, BUFSIZE, "%i\n", N);
+			if (buf_size < 0) {
 				perror("snprintf");
-				return 1;
+				goto kill_all;
 			}
-			if (k >= BUFSIZE) {
+			if (buf_size >= BUFSIZE) {
 				fprintf(stderr, "Too many strategies, %i is longer, than %i symbols\n",
 					N, BUFSIZE);
-				return 1;
+				goto kill_all;
 			}
-			write(out_fds[i], buf, k);
+			j = 0;
+			do {
+				k = write(out_fds[i], buf, buf_size - j);
+				if (k < 0) {
+					perror("write");
+					goto kill_all;
+				}
+				j += k;
+			} while (j < buf_size);
 			/* wait and get first guess from it */
 			ans[i] = 0;
 			while (1) {
 				k = read(in_fds[i], buf, BUFSIZE);
 				if (k < 0) {
 					perror("read");
-					return 1;
+					goto kill_all;
 				}
 				if (k == 0) {
 					fprintf(stderr, "Process %i closed fd, aborting\n", pid);
-					return 1;
+					goto kill_all;
 				}
 				for (j = 0; j < k; ++j) {
 					if ('0' <= buf[j] && buf[j] <= '9') {
@@ -281,6 +292,7 @@ int main(int argc, char **argv) {
 						if (buf[j] == '\n') {
 							break;
 						}
+						fprintf(stderr, "Invalid char (%c) found in answer of %i strategy, aborting\n", buf[j], i);
 						goto kill_all;
 					}
 				}
@@ -289,7 +301,7 @@ int main(int argc, char **argv) {
 				}
 			}
 			fprintf(stderr, "Strategy %i: first ans is %i\n", i, ans[i]);
-			(pfds+i)->fd = in_fds[i];
+			(pfds+i)->fd = -1 * in_fds[i];
 			(pfds+i)->events = POLLIN;
 		}
 	}
@@ -299,12 +311,12 @@ int main(int argc, char **argv) {
 	psa->sa_mask = sigmask;
 	if (sigaction(SIGCHLD, psa, NULL) == -1) {
 		perror("sigaction");
-		return 1;
+		goto kill_all;
 	}
 	sigaddset(&sigmask, SIGCHLD);
 	if (sigprocmask(SIG_SETMASK, &sigmask, NULL)) {
 		perror("sigprocmask");
-		return 1;
+		goto kill_all;
 	}
 	sigemptyset(&sigmask);
 	j = 0;
@@ -312,30 +324,46 @@ int main(int argc, char **argv) {
 		k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
 		if (k < 0) {
 			perror("snprintf");
-			return 1;
+			goto kill_all;
 		}
 		if (k + 1 >= BUFSIZE - j) {
 			fprintf(stderr, "Ans string too long, aborting\n");
-			return 1;
+			goto kill_all;
 		}
 		j += k + 1;
 		buf[j-1] = (i == N-1) ? '\n' : ' ';
 	}
 	buf_size = j;
-	write(MACHINE_LOG, buf, buf_size);
+	j = 0;
+	do {
+		k = write(MACHINE_LOG, buf, buf_size);
+		if (k < -1) {
+			perror("write");
+			goto kill_all;
+		}
+		j += k;
+	} while (j < buf_size);
 	for (round_num = 1; round_num < NUM_ROUNDS; ++round_num) {
 		/* doing one round */
 		memset(answered, 0, sizeof(int)*N);
 		memset(ans, 0, sizeof(int)*N);
 		for (st_num = 0; st_num < N; ++st_num) {
-			write(out_fds[st_num], buf, buf_size);
+			j = 0;
+			do {
+				k = write(out_fds[st_num], buf, buf_size);
+				if (k < -1) {
+					perror("write");
+					goto kill_all;
+				}
+				j += k;
+			} while (j < buf_size);
 			(pfds+st_num)->fd = in_fds[st_num];
 #ifndef NPAR
 		}
 #endif
 		if (gettimeofday(pfinish, NULL) == -1) {
 			perror("gettimeofday");
-			return 1;
+			goto kill_all;
 		}
 		pfinish->tv_usec += WAIT_MSEC % 1000 * 1000;
 		pfinish->tv_sec += WAIT_MSEC / 1000 + pfinish->tv_usec / 1000000;
@@ -358,7 +386,7 @@ int main(int argc, char **argv) {
 			}
 			if (gettimeofday(pnow, NULL) == -1) {
 				perror("gettimeofday");
-				return 1;
+				goto kill_all;
 			}
 			if (pnow->tv_sec > pfinish->tv_sec ||
 				(pnow->tv_sec == pfinish->tv_sec &&
@@ -377,7 +405,7 @@ int main(int argc, char **argv) {
 			if (k == -1 && errno != EINTR) {
 				fprintf(stderr, "ppoll failed\n");
 				perror("ppoll");
-				break;
+				goto kill_all;
 			}
 			for (i = 0; i < N; ++i) {
 				if ((pfds+i)->fd > 0 && (pfds+i)->revents != 0) {
@@ -385,7 +413,7 @@ int main(int argc, char **argv) {
 						k = read(in_fds[i], buf, BUFSIZE);
 						if (k == -1) {
 							perror("read");
-							return 1;
+							goto kill_all;
 						}
 						for (j = 0; j < k; ++j) {
 							if ('0' > buf[j] || buf[j] > '9') {
@@ -394,29 +422,25 @@ int main(int argc, char **argv) {
 									answered[i] = 1;
 									break;
 								}
+								fprintf(stderr, "Invalid char (%c) found in answer of %i strategy, aborting\n", buf[j], i);
 								goto kill_all;
 							} else {
 								ans[i] = ans[i]*10 + (int)(buf[j] - '0');
 							}
 						}
 					} else {
-						not_alive[i] = 2;
-						(pfds+i)->fd = -1 * in_fds[i];
-						/* optinally kill the proc */
-						if (pids[i] <= 0) {
-							fprintf(stderr, "Bad pid: %i\n", pids[i]);
-						} else {
-							kill(pids[i], SIGTERM);
-						}
+						fprintf(stderr, "Err on polling of %i strategy fd\n", i);
+						goto kill_all;
 					}
 				}
 			}
 			if (got_SIGCHLD) {
 				got_SIGCHLD = 0;
+				/*
 				pid = wait(&k);
 				if (pid == -1) {
 					perror("wait");
-					return 1;
+					goto kill_all;
 				}
 				fprintf(stderr, "waited for %i\n", pid);
 				for (i = 0; i < N; ++i) {
@@ -424,11 +448,20 @@ int main(int argc, char **argv) {
 						not_alive[i] = 1;
 						retstatuses[i] = k;
 					}
-					not_alive[i] = -1;
-					(pfds+i)->fd = -1 * in_fds[i];
-					close(in_fds[i]);
-					close(out_fds[i]);
 				}
+				*/
+				for (i = 0; i < N; ++i) {
+					j = waitpid(pids[i], &k, WNOHANG);
+					if (j < 0) {
+						perror("waitpid");
+					}
+					if (j == 0) {
+						continue;
+					}
+					not_alive[i] = 1;
+					retstatuses[i] = k;
+				}
+				goto kill_all;
 			}
 		}
 #ifdef NPAR
@@ -437,43 +470,244 @@ int main(int argc, char **argv) {
 		for (i = 0; i < N; ++i) {
 			printf("%i-th strategy %s: %i\n", i, answered[i] ?
 			"finished" : "not finished", ans[i]);
-			if (not_alive[i]) {
-				if (WIFEXITED(retstatuses[i])) {
-					fprintf(stderr, "%i strategy (%i) exited with %i, stopping\n", i, pids[i], WEXITSTATUS(retstatuses[i]));
-					goto cleanup;
-				}
-				if (WIFSIGNALED(retstatuses[i])) {
-					fprintf(stderr, "%i strategy (%i) killed by %i, stopping\n", i, pids[i], WTERMSIG(retstatuses[i]));
-                                        goto cleanup;
-				}
-			}
 		}
 		j = 0;
 		for (i = 0; i < N; ++i) {
 			k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
 			if (k < 0) {
 				perror("snprintf");
-				return 1;
+				goto kill_all;
 			}
 			if (k + 1 >= BUFSIZE - j) {
 				fprintf(stderr, "Ans string too long, aborting\n");
-				return 1;
+				goto kill_all;
 			}
 			j += k + 1;
 			buf[j-1] = (i == N-1) ? '\n' : ' ';
 		}
 		buf_size = j;
-		write(MACHINE_LOG, buf, buf_size);
+		j = 0;
+		do {
+			k = write(MACHINE_LOG, buf, buf_size);
+			if (k < 0) {
+				perror("write");
+				goto kill_all;
+			}
+			j += k;
+		} while (j < buf_size);
 	} /* one round routine finished */
-cleanup:
-	fsync(MACHINE_LOG);
-	close(MACHINE_LOG);
+kill_all:
+	if (MACHINE_LOG != 1) {
+		if (fsync(MACHINE_LOG) < 0) {
+			perror("fsync");
+		}
+		close(MACHINE_LOG);
+	}
 	for (i = 0; i < N; ++i) {
-		if (not_alive[i] == 0) {
-			fprintf(stderr, "%i was still alive\n", i);
-			close(in_fds[i]);
-			close(out_fds[i]);
-			/* optionally kill the proc */
+		close(in_fds[i]);
+		close(out_fds[i]);
+	}
+	pfinish->tv_usec += WAIT_SIGTERM % 1000 * 1000;
+	pfinish->tv_sec += WAIT_SIGTERM / 1000 + pfinish->tv_usec / 1000000;
+	pfinish->tv_usec %= 1000000;
+	while (1) {
+		k = 0;
+		for (i = 0; i < N; ++i) {
+			if (!not_alive[i]) {
+				k = 1;
+				break;
+			}
+		}
+		if (k == 0) {
+			break;
+		}
+		if (gettimeofday(pnow, NULL) == -1) {
+			perror("gettimeofday");
+			goto cleanup;
+		}
+		if (pnow->tv_sec > pfinish->tv_sec ||
+			(pnow->tv_sec == pfinish->tv_sec &&
+			pnow->tv_usec >= pfinish->tv_usec)) {
+			break;
+		}
+		if (pfinish->tv_usec < pnow->tv_usec) {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec - 1;
+			tmo_p->tv_nsec = 1000000000 +
+				(pfinish->tv_usec - pnow->tv_usec) * 1000;
+		} else {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec;
+			tmo_p->tv_nsec = (pfinish->tv_usec - pnow->tv_usec) * 1000;
+		}
+		k = ppoll(pfds, 0, tmo_p, &sigmask);
+		if (k == -1 && errno != EINTR) {
+			fprintf(stderr, "ppoll failed\n");
+			perror("ppoll");
+			goto cleanup;
+		}
+		if (got_SIGCHLD) {
+			got_SIGCHLD = 0;
+			for (i = 0; i < N; ++i) {
+				if (not_alive[i]) {
+					continue;
+				}
+				j = waitpid(pids[i], &k, WNOHANG);
+				if (j < 0) {
+					perror("waitpid");
+					goto cleanup;
+				}
+				if (j == 0) {
+					continue;
+				}
+				not_alive[i] = 1;
+				retstatuses[i] = k;
+			}
+		}
+	}
+	for (i = 0; i < N; ++i) {
+		if (!not_alive[i] && pids[i] > 0) {
+			fprintf(stderr, "Sending SIGTERM to strategy %i (%i)\n", i, pids[i]);
+			kill(pids[i], SIGTERM);
+			continue;
+		}
+		if (pids[i] <= 0) {
+			fprintf(stderr, "Bad pid (%i) of %i strategy\n", pids[i], i);
+		}
+	}
+	if (gettimeofday(pfinish, NULL) == -1) {
+		perror("gettimeofday");
+		goto cleanup;
+	}
+	pfinish->tv_usec += WAIT_SIGTERM % 1000 * 1000;
+	pfinish->tv_sec += WAIT_SIGTERM / 1000 + pfinish->tv_usec / 1000000;
+	pfinish->tv_usec %= 1000000;
+	while (1) {
+		k = 0;
+		for (i = 0; i < N; ++i) {
+			if (!not_alive[i]) {
+				k = 1;
+				break;
+			}
+		}
+		if (k == 0) {
+			break;
+		}
+		if (gettimeofday(pnow, NULL) == -1) {
+			perror("gettimeofday");
+			goto cleanup;
+		}
+		if (pnow->tv_sec > pfinish->tv_sec ||
+			(pnow->tv_sec == pfinish->tv_sec &&
+			pnow->tv_usec >= pfinish->tv_usec)) {
+			break;
+		}
+		if (pfinish->tv_usec < pnow->tv_usec) {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec - 1;
+			tmo_p->tv_nsec = 1000000000 +
+				(pfinish->tv_usec - pnow->tv_usec) * 1000;
+		} else {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec;
+			tmo_p->tv_nsec = (pfinish->tv_usec - pnow->tv_usec) * 1000;
+		}
+		k = ppoll(pfds, 0, tmo_p, &sigmask);
+		if (k == -1 && errno != EINTR) {
+			fprintf(stderr, "ppoll failed\n");
+			perror("ppoll");
+			goto cleanup;
+		}
+		if (got_SIGCHLD) {
+			got_SIGCHLD = 0;
+			for (i = 0; i < N; ++i) {
+				if (not_alive[i]) {
+					continue;
+				}
+				j = waitpid(pids[i], &k, WNOHANG);
+				if (j < 0) {
+					perror("waitpid");
+					goto cleanup;
+				}
+				if (j == 0) {
+					continue;
+				}
+				not_alive[i] = 1;
+				retstatuses[i] = k;
+			}
+		}
+	}
+	for (i = 0; i < N; ++i) {
+		if (pids[i] > 0 && !not_alive[i]) {
+			fprintf(stderr, "Sending SIGKILL to strategy %i (%i)\n", i, pids[i]);
+			kill(pids[i], SIGKILL);
+		}
+	}
+	if (gettimeofday(pfinish, NULL) == -1) {
+		perror("gettimeofday");
+		goto cleanup;
+	}
+	pfinish->tv_usec += WAIT_SIGKILL % 1000 * 1000;
+	pfinish->tv_sec += WAIT_SIGKILL / 1000 + pfinish->tv_usec / 1000000;
+	pfinish->tv_usec %= 1000000;
+	while (1) {
+		k = 0;
+		for (i = 0; i < N; ++i) {
+			if (!not_alive[i]) {
+				k = 1;
+				break;
+			}
+		}
+		if (k == 0) {
+			break;
+		}
+		if (gettimeofday(pnow, NULL) == -1) {
+			perror("gettimeofday");
+			goto cleanup;
+		}
+		if (pnow->tv_sec > pfinish->tv_sec ||
+			(pnow->tv_sec == pfinish->tv_sec &&
+			pnow->tv_usec >= pfinish->tv_usec)) {
+			break;
+		}
+		if (pfinish->tv_usec < pnow->tv_usec) {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec - 1;
+			tmo_p->tv_nsec = 1000000000 +
+				(pfinish->tv_usec - pnow->tv_usec) * 1000;
+		} else {
+			tmo_p->tv_sec = pfinish->tv_sec - pnow->tv_sec;
+			tmo_p->tv_nsec = (pfinish->tv_usec - pnow->tv_usec) * 1000;
+		}
+		k = ppoll(pfds, 0, tmo_p, &sigmask);
+		if (k == -1 && errno != EINTR) {
+			fprintf(stderr, "ppoll failed\n");
+			perror("ppoll");
+			goto cleanup;
+		}
+		if (got_SIGCHLD) {
+			got_SIGCHLD = 0;
+			for (i = 0; i < N; ++i) {
+				if (not_alive[i]) {
+					continue;
+				}
+				j = waitpid(pids[i], &k, WNOHANG);
+				if (j < 0) {
+					perror("waitpid");
+					goto cleanup;
+				}
+				if (j == 0) {
+					continue;
+				}
+				not_alive[i] = 1;
+				retstatuses[i] = k;
+			}
+		}
+	}
+cleanup:
+	for (i = 0; i < N; ++i) {
+		if (not_alive[i]) {
+			if (WIFEXITED(retstatuses[i])) {
+				fprintf(stderr, "%i strategy (%i) exited with %i, stopping\n", i, pids[i], WEXITSTATUS(retstatuses[i]));
+			}
+			if (WIFSIGNALED(retstatuses[i])) {
+				fprintf(stderr, "%i strategy (%i) killed by %i, stopping\n", i, pids[i], WTERMSIG(retstatuses[i]));
+			}
 		}
 	}
 	for (i = 0; i < N; ++i) {
