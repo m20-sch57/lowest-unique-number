@@ -23,12 +23,36 @@ int main(void) {
 			fprintf(stderr, "EOF\n");
 			return 1;
 		}
-		if (*a == '\n') {
+		if (*a == ' ') {
 			break;
+		}
+		if ('0' > *a || '9' < *a) {
+			fprintf(stderr, "Bad symbol in N: %c\n", *a);
+			return 1;
 		}
 		N = N*10 + *a - '0';
 	}
-	fprintf(stderr, "%i: Number of players: %i\n", pid, N);
+	k = 0;
+	while (1) {
+		i = read(0, a, 1);
+		if (i < 0) {
+			perror("read");
+			return 1;
+		}
+		if (i == 0) {
+			fprintf(stderr, "EOF\n");
+			return 1;
+		}
+		if (*a == '\n') {
+			break;
+		}
+		if ('0' > *a || '9' < *a) {
+			fprintf(stderr, "Bad symbol in k: %c\n", *a);
+			return 1;
+		}
+		k = k*10 + *a - '0';
+	}
+	fprintf(stderr, "%i: Number of players: %i, position: %i\n", pid, N, k);
 	ans = malloc(sizeof(int)*N);
 	if (ans == NULL) {
 		perror("malloc");

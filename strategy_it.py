@@ -21,7 +21,7 @@ def strategy():
     return choice([0, 1])
 
 
-N = int(input())
+N, k = map(int, input().split())
 
 print(strategy())
 

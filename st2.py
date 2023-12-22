@@ -2,7 +2,7 @@
 
 import sys
 
-N = int(input())
+N, k = map(int, input().split())
 
 print(0)
 

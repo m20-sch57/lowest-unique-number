@@ -283,14 +283,14 @@ int main(int argc, char **argv) {
 				goto kill_all;
 			}
 			/* tell strategy number of players */
-			buf_size = snprintf(buf, BUFSIZE, "%i\n", N);
+			buf_size = snprintf(buf, BUFSIZE, "%i %i\n", N, i);
 			if (buf_size < 0) {
 				perror("snprintf");
 				goto kill_all;
 			}
 			if (buf_size >= BUFSIZE) {
-				fprintf(stdout, "Too many strategies, %i is longer, than %i symbols\n",
-					N, BUFSIZE);
+				fprintf(stdout, "Too many strategies, 'N k' is longer, than %i symbols\n",
+					BUFSIZE);
 				goto kill_all;
 			}
 			j = 0;
