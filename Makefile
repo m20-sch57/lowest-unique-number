@@ -2,7 +2,7 @@
 
 CFLAGS=-Wall -Wextra -ansi -Wpedantic -g -O2
 
-TARGETS=master master_npar st1
+TARGETS=master master_npar
 
 all: $(TARGETS)
 
