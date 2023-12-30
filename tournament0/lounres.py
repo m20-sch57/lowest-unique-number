@@ -15,4 +15,4 @@ def index_who_wins(nums):
 print(1)
 
 for line in stdin:
-    println(index_who_wins(list(map(int, line.split()))))
+    print(index_who_wins(list(map(int, line.split()))))
