@@ -569,8 +569,16 @@ int main(int argc, char **argv) {
 					not_alive[i] = 1;
 					retstatuses[i] = k;
 				}
-				EXIT_CODE = EXIT_FAILURE;
-				goto kill_all;
+				if (round_num != NUM_TURNS - 1) {
+					EXIT_CODE = EXIT_FAILURE;
+					goto kill_all;
+				}
+				for (i = 0; i < N; ++i) {
+					if (!answered[i] && not_alive[i]) {
+						EXIT_CODE = EXIT_FAILURE;
+						goto kill_all;
+					}
+				}
 			}
 		}
 #ifdef NPAR
