@@ -1,0 +1,12 @@
+Forked 43642
+Starting to reopen 0 and 1
+Calling execv `tournament0/the_best_strategy.py` (pid 43642)
+Strategy 0: first ans is 0
+Forked 43643
+Starting to reopen 0 and 1
+Calling execv `tournament0/pzakorko.py` (pid 43643)
+Strategy 1: first ans is 0
+Forked 43644
+Starting to reopen 0 and 1
+Calling execv `tournament0/lounres.py` (pid 43644)
+Strategy 2: first ans is 1

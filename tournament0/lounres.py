@@ -7,7 +7,7 @@ N, k, _ = map(int, input().split())
 last_win_number = None
 
 def index_who_wins(nums):
-    for i in range(size(nums)):
+    for i in range(len(nums)):
         cnt = nums.count(i)
         if cnt <= 1:
             return i
@@ -15,4 +15,4 @@ def index_who_wins(nums):
 print(1)
 
 for line in stdin:
-    println(index_who_wins(list(map(int, line.split()))))
+    print(index_who_wins(list(map(int, line.split()))))

@@ -1,0 +1,4 @@
+# N TURNS MAXX WAIT_MSEC MEMLIMIT
+# Strategies executables
+4 1000 1000000 100 4294967296
+tournament0/alex_dany tournament0/lounres.py tournament0/pzakorko.py tournament0/elexunix.py

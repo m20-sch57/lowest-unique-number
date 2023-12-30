@@ -1,0 +1,16 @@
+Forked 41694
+Starting to reopen 0 and 1
+Calling execv `tournament0/the_best_strategy.py` (pid 41694)
+Strategy 0: first ans is 0
+Forked 41695
+Starting to reopen 0 and 1
+Calling execv `tournament0/elexunix.py` (pid 41695)
+Strategy 1: first ans is 2
+Forked 41719
+Starting to reopen 0 and 1
+Calling execv `tournament0/fedro.py` (pid 41719)
+Strategy 2: first ans is 0
+Traceback (most recent call last):
+  File "/lowest-unique-number/tournament0/elexunix.py", line 25, in <module>
+    input()
+EOFError: EOF when reading a line
