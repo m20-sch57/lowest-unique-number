@@ -1,0 +1,6 @@
+tournament0/alex_dany           	0.395	(24912 / 63000)
+tournament0/fedro.py            	0.272	(17937 / 66000)
+tournament0/the_best_strategy.py	0.245	(16907 / 69000)
+tournament0/lounres.py          	0.120	(8258 / 69000)
+tournament0/elexunix.py         	0.057	(3819 / 67000)
+tournament0/pzakorko.py         	0.053	(3484 / 66000)
