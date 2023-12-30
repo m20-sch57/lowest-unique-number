@@ -1,29 +1,36 @@
 #define _GNU_SOURCE
 
-#include <sys/types.h>
+#include <sys/resource.h>
 #include <sys/stat.h>
-#include <sys/wait.h>
 #include <sys/time.h>
+#include <sys/types.h>
+#include <sys/wait.h>
 
-#include <stdio.h>
-#include <stdlib.h>
 #include <errno.h>
-#include <unistd.h>
+#include <fcntl.h>
 #include <poll.h>
 #include <signal.h>
+#include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
-#include <fcntl.h>
+#include <unistd.h>
 
+#define WAIT_INIT	5000
 #define WAIT_SIGKILL	100
 #define WAIT_SIGTERM	1000
 #define WAIT_MSEC	100
 #define BUFSIZE		1024
-#define NUM_ROUNDS	1000
+#define NUM_TURNS	1000
+#define MAXX		1000000
+#define MEMLIMIT	4294967296l
+/* #define MEMLIMIT	2147483648l*/
 
-char *USAGE = "usage: %s <machine_log> <human_log> <N> <st_1> ... <st_N>\n";
+#define ARG_N_POS	5
+char *USAGE = "usage: %s <config_log> <machine_log> <human_log> <error_log> <N> <st_1> ... <st_N>\n";
 char *FIFO_NAME_TEMPL = "fifo%i.%s";
 
 int MACHINE_LOG;
+int EXIT_CODE;
 
 volatile sig_atomic_t got_SIGCHLD = 0;
 
@@ -41,6 +48,7 @@ int main(int argc, char **argv) {
 	int N, i, j, k, round_num, st_num, buf_size;
 	char **in_fifos, **out_fifos;
 	struct pollfd *pfds;
+	struct rlimit *lim_as;
 	struct timespec *tmo_p;
 	struct timeval *pfinish, *pnow;
 	struct sigaction *psa;
@@ -52,160 +60,198 @@ int main(int argc, char **argv) {
 	int *retstatuses, *ans, *answered;
 	pid_t *pids, pid;
 
+	EXIT_CODE = EXIT_SUCCESS;
 	args[1] = NULL;
-	if (argc < 4) {
+	if (argc < ARG_N_POS+1) {
 		fprintf(stderr, USAGE, *argv);
-		return 1;
+		return EXIT_FAILURE;
 	}
-	N = atoi(*(argv+3));
+	N = atoi(*(argv+ARG_N_POS));
 	if (N < 2) {
 		fprintf(stderr, USAGE, *argv);
 		fprintf(stderr, "\tN must be at least 2 (got `%i`)\n", N);
-		return 1;
+		return EXIT_FAILURE;
 	}
-	if (argc-4 != N) {
+	if (argc-(ARG_N_POS+1) != N) {
 		fprintf(stderr, USAGE, *argv);
-		fprintf(stderr, "\tNumber of strategies must be %i (%i found)\n", N, argc-4);
-		return 1;
+		fprintf(stderr, "\tNumber of strategies must be N=%i (%i found)\n", N, argc-(ARG_N_POS+1));
+		return EXIT_FAILURE;
 	}
 	if (strcmp(*(argv+1), "-") != 0) {
-		MACHINE_LOG = open(*(argv+1), O_WRONLY | O_CREAT | O_EXCL,
-				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
-		if (MACHINE_LOG < 0) {
+		k = open(*(argv+1), O_WRONLY | O_CREAT | O_EXCL,
+			S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if (k < 0) {
 			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+1));
 			perror("open");
-			return 1;
+			return EXIT_FAILURE;
+		}
+	} else {
+		k = 1;
+	}
+	dprintf(k, "# N TURNS MAXX WAIT_MSEC MEMLIMIT\n# Strategies executables\n%i %i %i %i %li\n", N, NUM_TURNS, MAXX, WAIT_MSEC, MEMLIMIT);
+	for (i = 0; i < N; ++i) {
+		dprintf(k, (i == N-1) ? "%s\n" : "%s ", *(argv+(ARG_N_POS+1)+i));
+	}
+	if (k != 1) {
+		fsync(k);
+		close(k);
+	}
+	if (strcmp(*(argv+2), "-") != 0) {
+		MACHINE_LOG = open(*(argv+2), O_WRONLY | O_CREAT | O_EXCL,
+				S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if (MACHINE_LOG < 0) {
+			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+2));
+			perror("open");
+			return EXIT_FAILURE;
 		}
 	} else {
 		MACHINE_LOG = 1;
 	}
-	if (strcmp(*(argv+2), "-") != 0) {
-		k = open(*(argv+2), O_WRONLY | O_CREAT | O_EXCL,
+	if (strcmp(*(argv+3), "-") != 0) {
+		k = open(*(argv+3), O_WRONLY | O_CREAT | O_EXCL,
 			S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k < 0) {
-			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+2));
+			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+3));
 			perror("open");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		dup2(k, 1);
+		close(k);
+	}
+	if (strcmp(*(argv+4), "-") != 0) {
+		k = open(*(argv+4), O_WRONLY | O_CREAT | O_EXCL,
+			S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
+		if (k < 0) {
+			fprintf(stderr, "'%s' exists, can't create it!\n", *(argv+4));
+			perror("open");
+			return EXIT_FAILURE;
+		}
+		dup2(k, 2);
 		close(k);
 	}
 	in_fifos = malloc(sizeof(char *)*N);
 	if (in_fifos == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	out_fifos = malloc(sizeof(char *)*N);
 	if (out_fifos == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	in_fds = malloc(sizeof(int)*N);
 	if (in_fds == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	out_fds = malloc(sizeof(int)*N);
 	if (out_fds == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	pfds = malloc(sizeof(struct pollfd)*N);
 	if (pfds == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	tmo_p = malloc(sizeof(struct timespec));
 	if (tmo_p == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	pfinish = malloc(sizeof(struct timeval));
 	if (pfinish == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	pnow = malloc(sizeof(struct timeval));
 	if (pnow == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
+	}
+	lim_as = malloc(sizeof(struct rlimit));
+	if (lim_as == NULL) {
+		perror("malloc");
+		return EXIT_FAILURE;
 	}
 	psa = malloc(sizeof(struct sigaction));
 	if (psa == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	memset(psa, 0, sizeof(struct sigaction));
 	not_alive = malloc(sizeof(char)*N);
 	if (not_alive == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	memset(not_alive, 0, sizeof(char)*N);
 	pids = malloc(sizeof(pid_t)*N);
 	if (pids == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	memset(pids, 0, sizeof(pid_t)*N);
 	retstatuses = malloc(sizeof(int)*N);
 	if (retstatuses == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	ans = malloc(sizeof(int)*N);
 	if (ans == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	memset(ans, 0, sizeof(int)*N);
 	answered = malloc(sizeof(int)*N);
 	if (answered == NULL) {
 		perror("malloc");
-		return 1;
+		return EXIT_FAILURE;
 	}
 	memset(answered, 0, sizeof(int)*N);
 	for (i = 0; i < N; ++i) {
 		k = snprintf(NULL, 0, FIFO_NAME_TEMPL, i, "in");
 		if (k < 0) {
 			perror("snprintf");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		in_fifos[i] = malloc(sizeof(char)*(k+1));
 		if (in_fifos[i] == NULL) {
 			perror("malloc");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		k = snprintf(in_fifos[i], k+1, FIFO_NAME_TEMPL, i, "in");
 		if (k < 0) {
 			perror("snprintf");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		k = snprintf(NULL, 0, FIFO_NAME_TEMPL, i, "out");
 		if (k < 0) {
 			perror("snprintf");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		out_fifos[i] = malloc(sizeof(char)*(k+1));
 		if (out_fifos[i] == NULL) {
 			perror("malloc");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		k = snprintf(out_fifos[i], k+1, FIFO_NAME_TEMPL, i, "out");
 		if (k < 0) {
 			perror("snprintf");
-			return 1;
+			return EXIT_FAILURE;
 		}
 	}
 	for (i = 0; i < N; ++i) {
 		k = mkfifo(in_fifos[i], S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k != 0) {
 			perror("mkfifo");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		k = mkfifo(out_fifos[i], S_IRUSR | S_IWUSR | S_IRGRP | S_IROTH);
 		if (k != 0) {
 			perror("mkfifo");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		in_fds[i] = -1;
@@ -219,11 +265,13 @@ int main(int argc, char **argv) {
 	psa->sa_mask = sigmask;
 	if (sigaction(SIGCHLD, psa, NULL) == -1) {
 		perror("sigaction");
+		EXIT_CODE = EXIT_FAILURE;
 		goto kill_all;
 	}
 	sigaddset(&sigmask, SIGCHLD);
 	if (sigprocmask(SIG_SETMASK, &sigmask, NULL)) {
 		perror("sigprocmask");
+		EXIT_CODE = EXIT_FAILURE;
 		goto kill_all;
 	}
 	sigemptyset(&sigmask);
@@ -231,6 +279,7 @@ int main(int argc, char **argv) {
 		pid = fork();
 		if (pid < 0) {
 			perror("fork");
+			EXIT_CODE = EXIT_FAILURE;
 			goto kill_all;
 		}
 		if (pid == 0) {
@@ -250,22 +299,36 @@ int main(int argc, char **argv) {
 			k = open(in_fifos[i], O_WRONLY);
 			if (k == -1) {
 				perror("open");
-				return 1;
+				return EXIT_FAILURE;
 			}
 			dup2(k, 1);
 			close(k);
 			k = open(out_fifos[i], O_RDONLY);
 			if (k == -1) {
 				perror("open");
-				return 1;
+				return EXIT_FAILURE;
 			}
 			dup2(k, 0);
 			close(k);
-			args[0] = *(argv+4+i);
-			fprintf(stderr, "Calling execv\n");
-			if (execv(*(argv+4+i), args) < 0) {
+			k = getrlimit(RLIMIT_AS, lim_as);
+			if (k < 0) {
+				perror("getrlimit");
+				return EXIT_FAILURE;
+			}
+			if (lim_as->rlim_max == RLIM_INFINITY || lim_as->rlim_max > MEMLIMIT) {
+				lim_as->rlim_cur = MEMLIMIT;
+				lim_as->rlim_max = MEMLIMIT;
+				k = setrlimit(RLIMIT_AS, lim_as);
+				if (k < 0) {
+					perror("setrlimit");
+					return EXIT_FAILURE;
+				}
+			}
+			args[0] = *(argv+(ARG_N_POS+1)+i);
+			fprintf(stderr, "Calling execv `%s` (pid %i)\n", args[0], getpid());
+			if (execv(*(argv+(ARG_N_POS+1)+i), args) < 0) {
 				perror("execv");
-				return 1;
+				return EXIT_FAILURE;
 			}
 		} else {
 			/* parent */
@@ -275,22 +338,27 @@ int main(int argc, char **argv) {
 			in_fds[i] = open(in_fifos[i], O_RDONLY);
 			if (in_fds[i] == -1) {
 				perror("open");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			out_fds[i] = open(out_fifos[i], O_WRONLY);
 			if (out_fds[i] == -1) {
 				perror("open");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
-			/* tell strategy number of players */
-			buf_size = snprintf(buf, BUFSIZE, "%i %i\n", N, i);
+			/* tell strategy number of players, it's position
+			 * and number of turns */
+			buf_size = snprintf(buf, BUFSIZE, "%i %i %i\n", N, i, NUM_TURNS);
 			if (buf_size < 0) {
 				perror("snprintf");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			if (buf_size >= BUFSIZE) {
-				fprintf(stdout, "Too many strategies, 'N k' is longer, than %i symbols\n",
+				fprintf(stdout, "Too many strategies, 'N k TURNS' is longer, than %i symbols\n",
 					BUFSIZE);
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			j = 0;
@@ -298,6 +366,7 @@ int main(int argc, char **argv) {
 				k = write(out_fds[i], buf, buf_size - j);
 				if (k < 0) {
 					perror("write");
+					EXIT_CODE = EXIT_FAILURE;
 					goto kill_all;
 				}
 				j += k;
@@ -308,20 +377,28 @@ int main(int argc, char **argv) {
 				k = read(in_fds[i], buf, BUFSIZE);
 				if (k < 0) {
 					perror("read");
+					EXIT_CODE = EXIT_FAILURE;
 					goto kill_all;
 				}
 				if (k == 0) {
 					fprintf(stdout, "Process %i closed fd, aborting\n", pid);
+					EXIT_CODE = EXIT_FAILURE;
 					goto kill_all;
 				}
 				for (j = 0; j < k; ++j) {
 					if ('0' <= buf[j] && buf[j] <= '9') {
 						ans[i] = 10*ans[i]+buf[j]-'0';
+						if (ans[i] > MAXX) {
+							fprintf(stdout, "Strategy %i answered invalid number (at least %i, greater than %i), aborting\n", i, ans[i], MAXX);
+							EXIT_CODE = EXIT_FAILURE;
+							goto kill_all;
+						}
 					} else {
 						if (buf[j] == '\n') {
 							break;
 						}
 						fprintf(stdout, "Invalid char (%c) found in answer of %i strategy, aborting\n", buf[j], i);
+						EXIT_CODE = EXIT_FAILURE;
 						goto kill_all;
 					}
 				}
@@ -339,10 +416,12 @@ int main(int argc, char **argv) {
 		k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
 		if (k < 0) {
 			perror("snprintf");
+			EXIT_CODE = EXIT_FAILURE;
 			goto kill_all;
 		}
 		if (k + 1 >= BUFSIZE - j) {
 			fprintf(stdout, "Ans string too long, aborting\n");
+			EXIT_CODE = EXIT_FAILURE;
 			goto kill_all;
 		}
 		j += k + 1;
@@ -354,11 +433,12 @@ int main(int argc, char **argv) {
 		k = write(MACHINE_LOG, buf, buf_size);
 		if (k < -1) {
 			perror("write");
+			EXIT_CODE = EXIT_FAILURE;
 			goto kill_all;
 		}
 		j += k;
 	} while (j < buf_size);
-	for (round_num = 1; round_num < NUM_ROUNDS; ++round_num) {
+	for (round_num = 1; round_num < NUM_TURNS; ++round_num) {
 		/* doing one round */
 		memset(answered, 0, sizeof(int)*N);
 		memset(ans, 0, sizeof(int)*N);
@@ -368,6 +448,7 @@ int main(int argc, char **argv) {
 				k = write(out_fds[st_num], buf, buf_size);
 				if (k < -1) {
 					perror("write");
+					EXIT_CODE = EXIT_FAILURE;
 					goto kill_all;
 				}
 				j += k;
@@ -378,6 +459,7 @@ int main(int argc, char **argv) {
 #endif
 		if (gettimeofday(pfinish, NULL) == -1) {
 			perror("gettimeofday");
+			EXIT_CODE = EXIT_FAILURE;
 			goto kill_all;
 		}
 		pfinish->tv_usec += WAIT_MSEC % 1000 * 1000;
@@ -401,6 +483,7 @@ int main(int argc, char **argv) {
 			}
 			if (gettimeofday(pnow, NULL) == -1) {
 				perror("gettimeofday");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			if (pnow->tv_sec > pfinish->tv_sec ||
@@ -420,6 +503,7 @@ int main(int argc, char **argv) {
 			if (k == -1 && errno != EINTR) {
 				fprintf(stderr, "ppoll failed\n");
 				perror("ppoll");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			for (i = 0; i < N; ++i) {
@@ -428,6 +512,7 @@ int main(int argc, char **argv) {
 						k = read(in_fds[i], buf, BUFSIZE);
 						if (k == -1) {
 							perror("read");
+							EXIT_CODE = EXIT_FAILURE;
 							goto kill_all;
 						}
 						for (j = 0; j < k; ++j) {
@@ -438,6 +523,7 @@ int main(int argc, char **argv) {
 									break;
 								}
 								fprintf(stdout, "Invalid char (%c) found in answer of %i strategy, aborting\n", buf[j], i);
+								EXIT_CODE = EXIT_FAILURE;
 								goto kill_all;
 							} else {
 								ans[i] = ans[i]*10 + (int)(buf[j] - '0');
@@ -445,6 +531,7 @@ int main(int argc, char **argv) {
 						}
 					} else {
 						fprintf(stdout, "Err on polling of %i strategy fd\n", i);
+						EXIT_CODE = EXIT_FAILURE;
 						goto kill_all;
 					}
 				}
@@ -456,6 +543,7 @@ int main(int argc, char **argv) {
 				pid = wait(&k);
 				if (pid == -1) {
 					perror("wait");
+					EXIT_CODE = EXIT_FAILURE;
 					goto kill_all;
 				}
 				fprintf(stderr, "waited for %i\n", pid);
@@ -481,6 +569,7 @@ int main(int argc, char **argv) {
 					not_alive[i] = 1;
 					retstatuses[i] = k;
 				}
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 		}
@@ -496,10 +585,12 @@ int main(int argc, char **argv) {
 			k = snprintf(buf + j, BUFSIZE - j, "%i", ans[i]);
 			if (k < 0) {
 				perror("snprintf");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			if (k + 1 >= BUFSIZE - j) {
 				fprintf(stdout, "Ans string too long, aborting\n");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			j += k + 1;
@@ -511,6 +602,7 @@ int main(int argc, char **argv) {
 			k = write(MACHINE_LOG, buf, buf_size);
 			if (k < 0) {
 				perror("write");
+				EXIT_CODE = EXIT_FAILURE;
 				goto kill_all;
 			}
 			j += k;
@@ -533,6 +625,7 @@ kill_all:
 	}
 	if (gettimeofday(pfinish, NULL) == -1) {
 		perror("gettimeofday");
+		EXIT_CODE = EXIT_FAILURE;
 		goto cleanup;
 	}
 	pfinish->tv_usec += WAIT_SIGTERM % 1000 * 1000;
@@ -551,6 +644,7 @@ kill_all:
 		}
 		if (gettimeofday(pnow, NULL) == -1) {
 			perror("gettimeofday");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (pnow->tv_sec > pfinish->tv_sec ||
@@ -570,6 +664,7 @@ kill_all:
 		if (k == -1 && errno != EINTR) {
 			fprintf(stderr, "ppoll failed\n");
 			perror("ppoll");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (got_SIGCHLD) {
@@ -581,6 +676,7 @@ kill_all:
 				j = waitpid(pids[i], &k, WNOHANG);
 				if (j < 0) {
 					perror("waitpid");
+					EXIT_CODE = EXIT_FAILURE;
 					goto cleanup;
 				}
 				if (j == 0) {
@@ -607,6 +703,7 @@ kill_all:
 	}
 	if (gettimeofday(pfinish, NULL) == -1) {
 		perror("gettimeofday");
+		EXIT_CODE = EXIT_FAILURE;
 		goto cleanup;
 	}
 	pfinish->tv_usec += WAIT_SIGTERM % 1000 * 1000;
@@ -625,6 +722,7 @@ kill_all:
 		}
 		if (gettimeofday(pnow, NULL) == -1) {
 			perror("gettimeofday");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (pnow->tv_sec > pfinish->tv_sec ||
@@ -644,6 +742,7 @@ kill_all:
 		if (k == -1 && errno != EINTR) {
 			fprintf(stderr, "ppoll failed\n");
 			perror("ppoll");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (got_SIGCHLD) {
@@ -655,6 +754,7 @@ kill_all:
 				j = waitpid(pids[i], &k, WNOHANG);
 				if (j < 0) {
 					perror("waitpid");
+					EXIT_CODE = EXIT_FAILURE;
 					goto cleanup;
 				}
 				if (j == 0) {
@@ -692,6 +792,7 @@ kill_all:
 		}
 		if (gettimeofday(pnow, NULL) == -1) {
 			perror("gettimeofday");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (pnow->tv_sec > pfinish->tv_sec ||
@@ -711,6 +812,7 @@ kill_all:
 		if (k == -1 && errno != EINTR) {
 			fprintf(stderr, "ppoll failed\n");
 			perror("ppoll");
+			EXIT_CODE = EXIT_FAILURE;
 			goto cleanup;
 		}
 		if (got_SIGCHLD) {
@@ -722,6 +824,7 @@ kill_all:
 				j = waitpid(pids[i], &k, WNOHANG);
 				if (j < 0) {
 					perror("waitpid");
+					EXIT_CODE = EXIT_FAILURE;
 					goto cleanup;
 				}
 				if (j == 0) {
@@ -752,12 +855,12 @@ cleanup:
 		k = unlink(in_fifos[i]);
 		if (k != 0) {
 			perror("unlink");
-			return 1;
+			return EXIT_FAILURE;
 		}
 		k = unlink(out_fifos[i]);
 		if (k != 0) {
 			perror("unlink");
-			return 1;
+			return EXIT_FAILURE;
 		}
 	}
 	for (i = 0; i < N; ++i) {
@@ -773,10 +876,11 @@ cleanup:
 	free(pfinish);
 	free(pnow);
 	free(psa);
+	free(lim_as);
 	free(not_alive);
 	free(pids);
 	free(retstatuses);
 	free(ans);
 	free(answered);
-	return 0;
+	return EXIT_CODE;
 }

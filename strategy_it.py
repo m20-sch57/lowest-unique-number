@@ -3,6 +3,7 @@
 from sys import stdin, stderr
 from random import choice
 
+M = 100
 win_nums = []
 
 
@@ -17,11 +18,11 @@ def index_who_wins(nums):
 
 def strategy():
     if win_nums:
-        return choice(win_nums)
+        return choice(win_nums[-M:])
     return choice([0, 1])
 
 
-N, k = map(int, input().split())
+N, k, _ = map(int, input().split())
 
 print(strategy())
 
@@ -31,4 +32,4 @@ for line in stdin:
     if ind is not None:
         win_nums.append(move[ind])
     print(strategy())
-    print("\t", win_nums, file=stderr)
+    # print("\t", win_nums, file=stderr)
