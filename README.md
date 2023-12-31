@@ -22,7 +22,7 @@
 ```
 #!/usr/bin/python3 -u
 
-from random import randint
+import random
 
 n, k, cnt_turns = map(int, input().split())
 for turn in range(cnt_turns):
