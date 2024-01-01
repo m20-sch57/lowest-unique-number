@@ -1,6 +1,5 @@
 #!/usr/bin/python3
 
-# import numpy as np
 import random
 import sys
 import os
@@ -17,10 +16,15 @@ def get_round_log_path(round_id, max_round_id):
 def play(round_id, max_round_id, strats):
     log_path = get_round_log_path(round_id, max_round_id)
     os.makedirs(log_path)
-    # status = os.system(f'./master {log_path}/config.txt {log_path}/log.txt {log_path}/user.txt {len(strats)} {" ".join(strats)} 2>/dev/null')
-    proc = subprocess.Popen(["./master", f"{log_path}/config.txt", f"{log_path}/log.txt", f"{log_path}/user.txt", f"{log_path}/error.txt", str(len(strats)),] + strats)
+    proc = subprocess.Popen([
+        "./master", 
+        f"{log_path}/config.txt", 
+        f"{log_path}/log.txt", 
+        f"{log_path}/user.txt", 
+        f"{log_path}/error.txt", 
+        str(len(strats))
+    ] + strats)
     status = proc.wait()
-    print(status)
     return status == 0
 
 
