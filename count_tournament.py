@@ -20,6 +20,7 @@ def main() -> int:
     base_dir = sys.argv[2]
     st_names = {s: i for i, s in enumerate(sorted(list(map(lambda x: os.path.basename(x).replace(".py", ""), os.listdir(strats_dir)))))}
     N = len(st_names)
+    title = os.path.basename(base_dir)
     scores = np.zeros(N)
     cnts = np.zeros(N)
     hist = []
@@ -63,11 +64,13 @@ def main() -> int:
     #     cnt += i
     #     plt.axvline(x=cnt, color="black", lw=0.5)
     plt.legend()
+    plt.title(title)
     plt.figure("normallized")
     hist = hist / hist.sum(axis=0) # normallization
     plt.stackplot(np.arange(hist.shape[1])+1, *hist, labels=legend)
     plt.ylim([0,1])
     plt.legend()
+    plt.title(title)
     plt.show()
     return 0
 
