@@ -1,4 +1,5 @@
 strats
 logs
+*.log
 master
 master_npar
